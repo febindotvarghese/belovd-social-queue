@@ -98,6 +98,32 @@ def read_caption(post_id):
     return (APPROVED_DIR / post_id / "caption.txt").read_text().strip()
 
 
+def _checked(r):
+    """Like r.raise_for_status(), but keeps Meta's actual error body."""
+    if not r.ok:
+        raise RuntimeError(f"{r.status_code} {r.request.method} {r.request.url} -> {r.text}")
+    return r
+
+
+def _wait_until_finished(base, container_id, token):
+    for _ in range(20):
+        r = _checked(
+            requests.get(
+                f"{base}/{container_id}",
+                params={"fields": "status_code,status", "access_token": token},
+                timeout=30,
+            )
+        )
+        body = r.json()
+        status = body.get("status_code")
+        if status == "FINISHED":
+            return
+        if status == "ERROR":
+            raise RuntimeError(f"container {container_id} errored: {body}")
+        time.sleep(3)
+    raise RuntimeError(f"container {container_id} never finished processing")
+
+
 def publish_instagram(post_id):
     caption = read_caption(post_id)
     token = os.environ["META_ACCESS_TOKEN"]
@@ -106,51 +132,48 @@ def publish_instagram(post_id):
     try:
         child_ids = []
         for fname in ("slide-1-affirmation.png", "slide-2-scripture.png"):
-            r = requests.post(
+            r = _checked(
+                requests.post(
+                    f"{base}/{ig_id}/media",
+                    data={
+                        "image_url": raw_url(post_id, fname),
+                        "is_carousel_item": "true",
+                        "access_token": token,
+                    },
+                    timeout=30,
+                )
+            )
+            child_ids.append(r.json()["id"])
+
+        for cid in child_ids:
+            _wait_until_finished(base, cid, token)
+
+        r = _checked(
+            requests.post(
                 f"{base}/{ig_id}/media",
                 data={
-                    "image_url": raw_url(post_id, fname),
-                    "is_carousel_item": "true",
+                    "media_type": "CAROUSEL",
+                    "children": ",".join(child_ids),
+                    "caption": caption,
                     "access_token": token,
                 },
                 timeout=30,
             )
-            r.raise_for_status()
-            child_ids.append(r.json()["id"])
-
-        for cid in child_ids:
-            for _ in range(20):
-                r = requests.get(
-                    f"{base}/{cid}",
-                    params={"fields": "status_code", "access_token": token},
-                    timeout=30,
-                )
-                r.raise_for_status()
-                if r.json().get("status_code") == "FINISHED":
-                    break
-                time.sleep(3)
-            else:
-                raise RuntimeError(f"container {cid} never finished processing")
-
-        r = requests.post(
-            f"{base}/{ig_id}/media",
-            data={
-                "media_type": "CAROUSEL",
-                "children": ",".join(child_ids),
-                "caption": caption,
-                "access_token": token,
-            },
-            timeout=30,
         )
-        r.raise_for_status()
         carousel_id = r.json()["id"]
 
-        r = requests.post(
-            f"{base}/{ig_id}/media_publish",
-            data={"creation_id": carousel_id, "access_token": token},
-            timeout=30,
+        # The carousel container itself also needs to reach FINISHED before
+        # media_publish will accept it — polling only the child items isn't
+        # enough.
+        _wait_until_finished(base, carousel_id, token)
+
+        _checked(
+            requests.post(
+                f"{base}/{ig_id}/media_publish",
+                data={"creation_id": carousel_id, "access_token": token},
+                timeout=30,
+            )
         )
-        r.raise_for_status()
         return "ok"
     except Exception as exc:
         print(f"::error::Instagram publish failed for {post_id}: {exc}")
