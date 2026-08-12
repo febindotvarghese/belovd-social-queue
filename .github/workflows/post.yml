@@ -2,9 +2,14 @@ name: Post next approved graphic
 
 on:
   schedule:
-    # Adjust once you know your usual approval time — this just needs to
-    # run sometime after you've pushed the day's approved/ folder.
-    - cron: "13 15 * * *"
+    # Each run posts one post-id per platform, and we push 2 approved
+    # posts/day — so two triggers/day, matching the content cadence.
+    # Times are anchored to US Eastern, currently EDT (UTC-4). Cron is
+    # fixed UTC and doesn't shift for DST, so these will read as
+    # ~6:00 AM / ~7:00 PM ET once EST (UTC-5) kicks in around November.
+    # Update the UTC hour by 1 at each DST transition if that drift matters.
+    - cron: "0 11 * * *" # ~7:00 AM ET
+    - cron: "0 0 * * *"  # ~8:00 PM ET
   workflow_dispatch: {}
 
 permissions:
