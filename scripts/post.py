@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """Publish the next approved Belovd post to Instagram + TikTok.
 
+Instagram and TikTok advance through approved/ independently — each
+platform posts whatever its own earliest not-yet-"ok" post is. This lets
+one platform go live before the other is configured, without either
+blocking on the other once both are running.
+
 Run by .github/workflows/post.yml on a schedule. Never invoked for content
 creation or approval — see ../.claude/skills/social-poster/SKILL.md in the
 main project repo for the human-in-the-loop steps that come before this.
 """
 import base64
 import os
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -20,27 +24,42 @@ APPROVED_DIR = REPO_ROOT / "approved"
 LOG_PATH = REPO_ROOT / "posted-log.md"
 GRAPH_VERSION = "v21.0"
 
-REQUIRED_ENV = [
-    "META_ACCESS_TOKEN",
-    "META_IG_USER_ID",
+META_KEYS = ["META_ACCESS_TOKEN", "META_IG_USER_ID"]
+TIKTOK_KEYS = [
     "TIKTOK_CLIENT_KEY",
     "TIKTOK_CLIENT_SECRET",
     "TIKTOK_ACCESS_TOKEN",
     "TIKTOK_REFRESH_TOKEN",
     "GH_SECRETS_TOKEN",
-    "GITHUB_REPOSITORY",
 ]
 
 
-def require_env():
-    missing = [k for k in REQUIRED_ENV if not os.environ.get(k)]
+def require(keys):
+    missing = [k for k in keys if not os.environ.get(k)]
     if missing:
         print(f"::error::Missing required secret(s): {', '.join(missing)}")
         sys.exit(1)
 
 
+def tiktok_configured():
+    present = [k for k in TIKTOK_KEYS if os.environ.get(k)]
+    if not present:
+        return False
+    if len(present) < len(TIKTOK_KEYS):
+        missing = [k for k in TIKTOK_KEYS if k not in present]
+        print(f"::error::TikTok partially configured — missing {', '.join(missing)}")
+        sys.exit(1)
+    return True
+
+
 def parse_log():
-    """Return {post_id: {"instagram": "ok"/"fail", "tiktok": "ok"/"fail"}}."""
+    """Return {post_id: {"instagram": "ok"/"fail", "tiktok": "ok"/"fail"}}.
+
+    The log is append-only and a post_id may appear on several lines (e.g.
+    Instagram succeeds today, TikTok catches up to that same post_id
+    weeks later) — later lines only overwrite the platform keys they
+    mention, never blank out a platform an earlier line already recorded.
+    """
     result = {}
     if not LOG_PATH.exists():
         return result
@@ -51,23 +70,20 @@ def parse_log():
         parts = [p.strip() for p in line.split("|")]
         if len(parts) < 3:
             continue
-        post_id, _files, statuses = parts[0], parts[1], parts[2]
-        entry = {}
+        post_id, statuses = parts[0], parts[2]
+        entry = result.setdefault(post_id, {})
         for tok in statuses.split():
             if ":" in tok:
                 platform, status = tok.split(":", 1)
                 entry[platform] = status
-        result[post_id] = entry
     return result
 
 
-def next_post_id(log):
+def find_next_pending(log, platform):
     if not APPROVED_DIR.exists():
         return None
-    ids = sorted(p.name for p in APPROVED_DIR.iterdir() if p.is_dir())
-    for post_id in ids:
-        entry = log.get(post_id, {})
-        if entry.get("instagram") == "ok" and entry.get("tiktok") == "ok":
+    for post_id in sorted(p.name for p in APPROVED_DIR.iterdir() if p.is_dir()):
+        if log.get(post_id, {}).get(platform) == "ok":
             continue
         return post_id
     return None
@@ -78,9 +94,12 @@ def raw_url(post_id, filename):
     return f"https://raw.githubusercontent.com/{repo}/main/approved/{post_id}/{filename}"
 
 
-def publish_instagram(post_id, caption, already_ok):
-    if already_ok:
-        return "ok"
+def read_caption(post_id):
+    return (APPROVED_DIR / post_id / "caption.txt").read_text().strip()
+
+
+def publish_instagram(post_id):
+    caption = read_caption(post_id)
     token = os.environ["META_ACCESS_TOKEN"]
     ig_id = os.environ["META_IG_USER_ID"]
     base = f"https://graph.instagram.com/{GRAPH_VERSION}"
@@ -184,9 +203,8 @@ def update_repo_secret(name, value):
     r.raise_for_status()
 
 
-def publish_tiktok(post_id, caption, already_ok):
-    if already_ok:
-        return "ok"
+def publish_tiktok(post_id):
+    caption = read_caption(post_id)
     try:
         access_token, new_refresh_token = refresh_tiktok_token()
         # Persist the rotated refresh token immediately — if anything below
@@ -248,29 +266,42 @@ def publish_tiktok(post_id, caption, already_ok):
         return "fail"
 
 
-def main():
-    require_env()
-    log = parse_log()
-    post_id = next_post_id(log)
-    if post_id is None:
-        print("Nothing pending — all approved posts are already published.")
-        return
-
-    post_dir = APPROVED_DIR / post_id
-    caption = (post_dir / "caption.txt").read_text().strip()
-    already = log.get(post_id, {})
-
-    ig_status = publish_instagram(post_id, caption, already.get("instagram") == "ok")
-    tt_status = publish_tiktok(post_id, caption, already.get("tiktok") == "ok")
-
+def log_result(post_id, statuses):
+    """statuses: dict of only the platform(s) actually attempted this run."""
+    parts = " ".join(f"{platform}:{status}" for platform, status in statuses.items())
     with LOG_PATH.open("a") as f:
         f.write(
-            f"{post_id} | slide-1-affirmation.png,slide-2-scripture.png | "
-            f"instagram:{ig_status} tiktok:{tt_status}\n"
+            f"{post_id} | slide-1-affirmation.png,slide-2-scripture.png | {parts}\n"
         )
 
-    print(f"{post_id}: instagram={ig_status} tiktok={tt_status}")
-    if ig_status != "ok" or tt_status != "ok":
+
+def main():
+    require(META_KEYS + ["GITHUB_REPOSITORY"])
+    log = parse_log()
+    any_failure = False
+
+    ig_post_id = find_next_pending(log, "instagram")
+    if ig_post_id:
+        status = publish_instagram(ig_post_id)
+        log_result(ig_post_id, {"instagram": status})
+        print(f"instagram: {ig_post_id} -> {status}")
+        any_failure = any_failure or status != "ok"
+    else:
+        print("instagram: nothing pending")
+
+    if tiktok_configured():
+        tt_post_id = find_next_pending(log, "tiktok")
+        if tt_post_id:
+            status = publish_tiktok(tt_post_id)
+            log_result(tt_post_id, {"tiktok": status})
+            print(f"tiktok: {tt_post_id} -> {status}")
+            any_failure = any_failure or status != "ok"
+        else:
+            print("tiktok: nothing pending")
+    else:
+        print("tiktok: not configured yet, skipping")
+
+    if any_failure:
         sys.exit(1)
 
 
