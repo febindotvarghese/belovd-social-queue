@@ -2,3 +2,4 @@
 2026-08-12-1 | slide-1-affirmation.png,slide-2-scripture.png | instagram:ok
 2026-08-12-2 | slide-1-affirmation.png,slide-2-scripture.png | instagram:ok
 2026-08-13-1 | slide-1-affirmation.png,slide-2-scripture.png | instagram:ok
+2026-08-13-2 | slide-1-affirmation.png,slide-2-scripture.png | instagram:ok
