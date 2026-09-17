@@ -2,14 +2,20 @@ name: Post next approved graphic
 
 on:
   schedule:
-    # Each run posts one post-id per platform, and we push 2 approved
-    # posts/day — so two triggers/day, matching the content cadence.
-    # Times are anchored to US Eastern, currently EDT (UTC-4). Cron is
-    # fixed UTC and doesn't shift for DST, so these will read as
-    # ~6:00 AM / ~7:00 PM ET once EST (UTC-5) kicks in around November.
-    # Update the UTC hour by 1 at each DST transition if that drift matters.
+    # ONE trigger per day. Each run posts one post-id per platform, and the
+    # queue now holds one post per day (one folder per date), because the app
+    # schedules exactly one affirmation per day and every post's words come
+    # from that row — see distribution/social/design-system-app.md §1.
+    #
+    # This was two triggers/day (7am + 8pm ET) back when the pipeline produced
+    # 2 posts/day. Adding a second trigger back would not double the output,
+    # it would drain the queue twice as fast and then post nothing.
+    #
+    # Time is anchored to US Eastern, currently EDT (UTC-4). Cron is fixed UTC
+    # and doesn't shift for DST, so this reads as ~6:00 AM ET once EST (UTC-5)
+    # kicks in around November. Update the UTC hour by 1 at each DST
+    # transition if that drift matters.
     - cron: "0 11 * * *" # ~7:00 AM ET
-    - cron: "0 0 * * *"  # ~8:00 PM ET
   workflow_dispatch: {}
 
 permissions:

@@ -10,14 +10,21 @@ public on social anyway.
 
 ## Cadence
 
-**2 posts/day**, to start. Each post gets its own `approved/<post-id>/`
-folder, where `post-id` is `<date>-<n>` (e.g. `2026-08-12-1`,
-`2026-08-12-2`) — a date alone is not a unique folder name once there's more
-than one post per day.
+**1 post/day.** Each post gets its own `approved/<post-id>/` folder, where
+`post-id` is simply the date (e.g. `2026-09-22`).
+
+The app schedules exactly one affirmation per day, and every post's words come
+from that row, so a second daily post could only repeat the same words on a
+different background. The workflow fires once a day to match.
+
+**Older folders use the `<date>-<n>` form** (`2026-08-12-1`, `2026-08-12-2`)
+from when this was 2 posts/day. Both forms sort correctly against each other
+in `post.py`'s ordering, so the old rows stay valid and nothing needs
+renaming — `2026-08-16-2` still sorts before `2026-09-17`.
 
 ## Workflow
 
-1. Run `creative-pipeline` locally — it picks 2 identity-facet angles for
+1. Run `creative-pipeline` locally — it picks 1 identity-facet angle for
    the day, then audits designs for each independently.
 2. For each approved post, it copies the selected files into
    `approved/<post-id>/`:
@@ -60,8 +67,11 @@ that platform only.
 
 ## Automation
 
-`scripts/post.py`, run by `.github/workflows/post.yml` on a daily
-GitHub Actions schedule, is what actually does steps 4 above. It needs six
+`scripts/post.py`, run by `.github/workflows/post.yml` on a once-daily
+GitHub Actions schedule (~7:00 AM ET), is what actually does step 4 above.
+One trigger per day, one post-id per platform per run — adding a second
+trigger would not double the output, it would drain the queue twice as fast
+and then post nothing. It needs six
 repo secrets set (Settings → Secrets and variables → Actions) —
 `META_ACCESS_TOKEN`, `META_IG_USER_ID`, `TIKTOK_CLIENT_KEY`,
 `TIKTOK_CLIENT_SECRET`, `TIKTOK_ACCESS_TOKEN`, `TIKTOK_REFRESH_TOKEN`, and
