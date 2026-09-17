@@ -2,20 +2,25 @@ name: Post next approved graphic
 
 on:
   schedule:
-    # ONE trigger per day. Each run posts one post-id per platform, and the
-    # queue now holds one post per day (one folder per date), because the app
-    # schedules exactly one affirmation per day and every post's words come
-    # from that row — see distribution/social/design-system-app.md §1.
+    # ONE post per day, at 7:00 AM US Eastern.
     #
-    # This was two triggers/day (7am + 8pm ET) back when the pipeline produced
-    # 2 posts/day. Adding a second trigger back would not double the output,
-    # it would drain the queue twice as fast and then post nothing.
+    # Two cron lines, but NOT two runs/day: each matches only during one half
+    # of the year, so exactly one fires on any given date. GitHub cron is
+    # fixed UTC and never shifts for DST, so a single line silently becomes
+    # 6 AM ET every November. These two keep 7 AM ET year-round.
     #
-    # Time is anchored to US Eastern, currently EDT (UTC-4). Cron is fixed UTC
-    # and doesn't shift for DST, so this reads as ~6:00 AM ET once EST (UTC-5)
-    # kicks in around November. Update the UTC hour by 1 at each DST
-    # transition if that drift matters.
-    - cron: "0 11 * * *" # ~7:00 AM ET
+    #   11:00 UTC = 7 AM EDT (Mar-Oct, UTC-4)
+    #   12:00 UTC = 7 AM EST (Nov-Feb, UTC-5)
+    #
+    # In the overlap months both lines fire, so the job's first step checks
+    # the real local Eastern hour and exits unless it is 7 AM. That guard is
+    # what actually enforces the schedule -- keep it if you touch these.
+    #
+    # The queue holds one folder per day because the app schedules exactly one
+    # affirmation per day. A second daily trigger would not double output, it
+    # would drain the queue twice as fast and then post nothing.
+    - cron: "0 11 * * *" # 7 AM EDT
+    - cron: "0 12 * * *" # 7 AM EST
   workflow_dispatch: {}
 
 permissions:
@@ -25,15 +30,37 @@ jobs:
   post:
     runs-on: ubuntu-latest
     steps:
+      # Both cron lines fire during DST overlap months, and workflow_dispatch
+      # must never be blocked. Exit early unless this is the real 7 AM ET slot.
+      - name: Is this the 7 AM Eastern slot?
+        id: slot
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "go=true" >> "$GITHUB_OUTPUT"   # manual dispatch always runs
+            exit 0
+          fi
+          hour=$(TZ=America/New_York date +%-H)
+          if [ "$hour" = "7" ]; then
+            echo "Eastern hour is 7. Proceeding."
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Eastern hour is $hour, not 7 -- off-season cron, skipping."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/checkout@v4
+        if: steps.slot.outputs.go == 'true'
 
       - uses: actions/setup-python@v5
+        if: steps.slot.outputs.go == 'true'
         with:
           python-version: "3.12"
 
       - run: pip install -r requirements.txt
+        if: steps.slot.outputs.go == 'true'
 
       - name: Run poster
+        if: steps.slot.outputs.go == 'true'
         env:
           META_ACCESS_TOKEN: ${{ secrets.META_ACCESS_TOKEN }}
           META_IG_USER_ID: ${{ secrets.META_IG_USER_ID }}
@@ -46,7 +73,7 @@ jobs:
         run: python scripts/post.py
 
       - name: Log result
-        if: always()
+        if: always() && steps.slot.outputs.go == 'true'
         run: |
           git config user.name "belovd-poster"
           git config user.email "actions@users.noreply.github.com"

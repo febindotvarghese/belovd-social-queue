@@ -298,10 +298,31 @@ def log_result(post_id, statuses):
         )
 
 
+def remaining_for(log, platform):
+    """How many approved posts this platform still has left to publish."""
+    if not APPROVED_DIR.exists():
+        return 0
+    return sum(
+        1
+        for p in APPROVED_DIR.iterdir()
+        if p.is_dir() and log.get(p.name, {}).get(platform) != "ok"
+    )
+
+
+LOW_RUNWAY_DAYS = 5
+
+
 def main():
     require(META_KEYS + ["GITHUB_REPOSITORY"])
     log = parse_log()
     any_failure = False
+
+    # Warn while there is still time to act. Without this the only signal is
+    # the queue hitting zero, which is the day posting has already stopped.
+    left = remaining_for(log, "instagram")
+    if 0 < left <= LOW_RUNWAY_DAYS:
+        print(f"::warning::instagram: only {left} post(s) left in the queue.")
+    print(f"instagram: {left} post(s) in queue before this run")
 
     ig_post_id = find_next_pending(log, "instagram")
     if ig_post_id:
@@ -310,7 +331,12 @@ def main():
         print(f"instagram: {ig_post_id} -> {status}")
         any_failure = any_failure or status != "ok"
     else:
-        print("instagram: nothing pending")
+        # An exhausted queue used to be a silent exit-0, indistinguishable in
+        # the Actions list from a healthy run. That hid a 31-day outage in
+        # Aug-Sep 2026: every run went green while nothing was published.
+        # A dry queue is a real problem -- it must fail the run and be seen.
+        print("::error::instagram: queue is EMPTY -- nothing was posted. Render and push more posts.")
+        any_failure = True
 
     if tiktok_configured():
         tt_post_id = find_next_pending(log, "tiktok")
