@@ -30,26 +30,36 @@ jobs:
   post:
     runs-on: ubuntu-latest
     steps:
-      # Both cron lines fire during DST overlap months, and workflow_dispatch
-      # must never be blocked. Exit early unless this is the real 7 AM ET slot.
-      - name: Is this the 7 AM Eastern slot?
+      - uses: actions/checkout@v4
+
+      # GitHub dispatches scheduled jobs late -- on this repo, routinely by
+      # 3-5 hours. So we CANNOT gate on "is it 7 AM ET right now": a run for
+      # the 7 AM slot often executes at 11 AM ET or later, and an hour check
+      # would skip every one of them. (It did, on 2026-09-17: two runs landed
+      # at ET hour 11 and both skipped, publishing nothing all day.)
+      #
+      # Gate on the Eastern DAY instead. Both cron lines are due before 8 AM
+      # ET, so the first run to arrive on a given Eastern date is that date's
+      # 7 AM slot, however late it actually starts. Any second run the same
+      # day is the off-season twin and stops here.
+      - name: Claim today's Eastern slot
         id: slot
         run: |
           if [ "${{ github.event_name }}" != "schedule" ]; then
-            echo "go=true" >> "$GITHUB_OUTPUT"   # manual dispatch always runs
+            echo "Manual dispatch -- always runs."
+            echo "go=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          hour=$(TZ=America/New_York date +%-H)
-          if [ "$hour" = "7" ]; then
-            echo "Eastern hour is 7. Proceeding."
-            echo "go=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "Eastern hour is $hour, not 7 -- off-season cron, skipping."
+          today=$(TZ=America/New_York date +%F)
+          echo "Eastern date: $today (ET hour $(TZ=America/New_York date +%-H))"
+          if grep -q "^slot:$today\b" posted-log.md 2>/dev/null; then
+            echo "Slot for $today already claimed -- skipping duplicate cron."
             echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+            echo "date=$today" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/checkout@v4
-        if: steps.slot.outputs.go == 'true'
 
       - uses: actions/setup-python@v5
         if: steps.slot.outputs.go == 'true'
@@ -77,6 +87,11 @@ jobs:
         run: |
           git config user.name "belovd-poster"
           git config user.email "actions@users.noreply.github.com"
+          # Mark this Eastern date as claimed so the off-season twin cron
+          # (and any re-dispatch) does not post a second time today.
+          if [ -n "${{ steps.slot.outputs.date }}" ]; then
+            echo "slot:${{ steps.slot.outputs.date }} claimed" >> posted-log.md
+          fi
           git add posted-log.md
           git diff --cached --quiet || git commit -m "Log post result [skip ci]"
           git push
