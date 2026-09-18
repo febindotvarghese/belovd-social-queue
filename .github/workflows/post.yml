@@ -21,7 +21,12 @@ on:
     # would drain the queue twice as fast and then post nothing.
     - cron: "0 11 * * *" # 7 AM EDT
     - cron: "0 12 * * *" # 7 AM EST
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      post_ahead:
+        description: "Publish the next post even if it is dated in the future"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -45,12 +50,20 @@ jobs:
       - name: Claim today's Eastern slot
         id: slot
         run: |
+          # A manual dispatch is still TODAY'S post -- it must claim the
+          # Eastern day like any other run. It previously bypassed the claim
+          # entirely, so on 2026-09-18 a manual run published that day's post
+          # without claiming, the scheduled run then found the day unclaimed
+          # and published the NEXT day's post too. Two posts, one day.
+          # Manual dispatch may still re-run a day that is already claimed
+          # (that is the point of it), but it always records the claim.
+          today=$(TZ=America/New_York date +%F)
           if [ "${{ github.event_name }}" != "schedule" ]; then
-            echo "Manual dispatch -- always runs."
+            echo "Manual dispatch for $today -- runs regardless of claim."
             echo "go=true" >> "$GITHUB_OUTPUT"
+            echo "date=$today" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          today=$(TZ=America/New_York date +%F)
           echo "Eastern date: $today (ET hour $(TZ=America/New_York date +%-H))"
           if grep -q "^slot:$today\b" posted-log.md 2>/dev/null; then
             echo "Slot for $today already claimed -- skipping duplicate cron."
@@ -80,6 +93,7 @@ jobs:
           TIKTOK_REFRESH_TOKEN: ${{ secrets.TIKTOK_REFRESH_TOKEN }}
           GH_SECRETS_TOKEN: ${{ secrets.GH_SECRETS_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          POST_AHEAD: ${{ inputs.post_ahead && '1' || '0' }}
         run: python scripts/post.py
 
       - name: Log result

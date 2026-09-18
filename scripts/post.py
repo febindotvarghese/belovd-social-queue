@@ -12,9 +12,12 @@ main project repo for the human-in-the-loop steps that come before this.
 """
 import base64
 import os
+import re
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import requests
 from nacl import encoding, public
@@ -79,12 +82,43 @@ def parse_log():
     return result
 
 
-def find_next_pending(log, platform):
+POST_DATE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})")
+
+
+def post_date(post_id):
+    """The Eastern date a folder is scheduled for, or None if unnamed by date.
+
+    Folder names are the scheduled date: "2026-09-19", or the retired
+    2-posts/day form "2026-08-16-2". Both start with the date.
+    """
+    m = POST_DATE_RE.match(post_id)
+    return m.group(1) if m else None
+
+
+def find_next_pending(log, platform, today=None):
+    """Oldest unposted folder that is DUE -- never one scheduled for later.
+
+    The due-date check is a backstop, not an optimisation. On 2026-09-18 a
+    manual run and a scheduled run both fired: the queue cursor simply
+    advanced, so the second one published 2026-09-19 a day early and put the
+    whole queue permanently one day ahead. A post whose folder is dated in
+    the future is never correct to publish, whatever the cursor says.
+    """
     if not APPROVED_DIR.exists():
         return None
+    if today is None:
+        today = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+    # POST_AHEAD=1 deliberately lifts the due-date backstop, for the rare case
+    # of intentionally publishing a future-dated post by hand.
+    if os.environ.get("POST_AHEAD") == "1":
+        today = "9999-12-31"
     for post_id in sorted(p.name for p in APPROVED_DIR.iterdir() if p.is_dir()):
         if log.get(post_id, {}).get(platform) == "ok":
             continue
+        due = post_date(post_id)
+        if due and due > today:
+            print(f"::notice::{platform}: next post {post_id} is not due until {due}; nothing to do today.")
+            return None
         return post_id
     return None
 
@@ -330,13 +364,18 @@ def main():
         log_result(ig_post_id, {"instagram": status})
         print(f"instagram: {ig_post_id} -> {status}")
         any_failure = any_failure or status != "ok"
-    else:
+    elif left == 0:
         # An exhausted queue used to be a silent exit-0, indistinguishable in
         # the Actions list from a healthy run. That hid a 31-day outage in
         # Aug-Sep 2026: every run went green while nothing was published.
         # A dry queue is a real problem -- it must fail the run and be seen.
         print("::error::instagram: queue is EMPTY -- nothing was posted. Render and push more posts.")
         any_failure = True
+    else:
+        # Posts remain but none is due yet (the queue is running ahead). Not
+        # an error -- do not fail the run or this would alert every day until
+        # the calendar catches up.
+        print("instagram: nothing due today; queue is ahead.")
 
     if tiktok_configured():
         tt_post_id = find_next_pending(log, "tiktok")
