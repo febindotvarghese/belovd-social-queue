@@ -201,14 +201,35 @@ def publish_instagram(post_id):
         # enough.
         _wait_until_finished(base, carousel_id, token)
 
-        _checked(
-            requests.post(
-                f"{base}/{ig_id}/media_publish",
-                data={"creation_id": carousel_id, "access_token": token},
-                timeout=30,
-            )
-        )
-        return "ok"
+        # FINISHED is necessary but not sufficient -- the container needs a
+        # moment to become publishable. Settling here avoids most of the
+        # 2207027 retries below.
+        time.sleep(5)
+
+        # A carousel container can report FINISHED and still be rejected by
+        # media_publish with code 9007 / subcode 2207027 ("Media ID is not
+        # available ... not ready for publishing"). It is a transient race on
+        # Meta's side, not a bad container, so retry with a backoff instead
+        # of failing the day's post. Seen on 2026-09-19.
+        last_exc = None
+        for attempt in range(6):
+            try:
+                _checked(
+                    requests.post(
+                        f"{base}/{ig_id}/media_publish",
+                        data={"creation_id": carousel_id, "access_token": token},
+                        timeout=30,
+                    )
+                )
+                return "ok"
+            except RuntimeError as exc:
+                if "2207027" not in str(exc) and "9007" not in str(exc):
+                    raise
+                last_exc = exc
+                delay = 5 * (attempt + 1)
+                print(f"carousel not publishable yet (attempt {attempt + 1}/6); retrying in {delay}s")
+                time.sleep(delay)
+        raise RuntimeError(f"carousel never became publishable: {last_exc}")
     except Exception as exc:
         print(f"::error::Instagram publish failed for {post_id}: {exc}")
         return "fail"
