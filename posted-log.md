@@ -28,3 +28,5 @@ slot:2026-09-23 claimed
 slot:2026-09-24 claimed
 2026-09-25 | slide-1-affirmation.png,slide-2-scripture.png | instagram:ok
 slot:2026-09-25 claimed
+2026-09-26 | slide-1-affirmation.png,slide-2-scripture.png | instagram:ok
+slot:2026-09-26 claimed
